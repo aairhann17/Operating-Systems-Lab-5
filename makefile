@@ -3,6 +3,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g
 TARGET = group29_bankers
 SRC = group29_banker.c
+INPUT = input.txt
 
 # Default rule
 all: $(TARGET)
@@ -17,4 +18,4 @@ clean:
 
 # Run the program
 run: $(TARGET)
-	./$(TARGET)
+	./$(TARGET) < $(INPUT)
