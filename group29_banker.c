@@ -249,6 +249,9 @@ void *customer_thread(void *arg) {
         Event *e = &queues[cid].items[k];
         int ok;
 
+        // Allow scheduler to interleave threads
+        usleep(rand() % 1000);
+
         /*
          * Critical section order required by the lab:
          * lock -> process event -> print log -> unlock
