@@ -250,7 +250,7 @@ void *customer_thread(void *arg) {
         int ok;
 
         // Allow scheduler to interleave threads
-        usleep(rand() % 1000);
+        // usleep(rand() % 1000);
 
         /*
          * Critical section order required by the lab:
