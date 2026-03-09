@@ -1,7 +1,7 @@
-#include <stdio.h> // library for input/output functions
-#include <stdlib.h> // library for memory allocation and process control
-#include <string.h> // library for string handling functions
-#include <pthread.h> // library for POSIX threads
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
 
 #define NUMBER_OF_CUSTOMERS 5 // fixed number of customers (threads) in the system
 #define NUMBER_OF_RESOURCES 3 // fixed number of resource types in the system
