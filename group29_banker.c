@@ -19,23 +19,36 @@ typedef struct {
     int cap;
 } EventQueue;
 
-/* Shared banker state */
+/*
+ * Shared banker state used by the safety and request/release logic:
+ * - available[r]: currently free instances of resource type r
+ * - maximum[c][r]: declared upper bound for customer c
+ * - allocation[c][r]: currently allocated instances to customer c
+ * - need[c][r]: remaining demand = maximum - allocation
+ */
 int available[NUMBER_OF_RESOURCES];
 int maximum[NUMBER_OF_CUSTOMERS][NUMBER_OF_RESOURCES];
 int allocation[NUMBER_OF_CUSTOMERS][NUMBER_OF_RESOURCES];
 int need[NUMBER_OF_CUSTOMERS][NUMBER_OF_RESOURCES];
 
-/* Per-customer event queues */
+/*
+ * Input events are partitioned by customer.
+ * Each thread consumes only its own queue, preserving per-customer order.
+ */
 EventQueue queues[NUMBER_OF_CUSTOMERS];
 int queue_index[NUMBER_OF_CUSTOMERS]; /* thread-local progress index by cid */
 
-/* Synchronization + global event id */
+/*
+ * One mutex protects all shared state + logging.
+ * global_event_id records the actual execution order across all threads.
+ */
 pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 int global_event_id = 0;
 
 /* ---------- Helpers ---------- */
 
 static int vector_leq(const int a[NUMBER_OF_RESOURCES], const int b[NUMBER_OF_RESOURCES]) {
+    /* Returns 1 iff a[j] <= b[j] for all resource types j. */
     int j;
     for (j = 0; j < NUMBER_OF_RESOURCES; j++) {
         if (a[j] > b[j]) return 0;
@@ -44,16 +57,19 @@ static int vector_leq(const int a[NUMBER_OF_RESOURCES], const int b[NUMBER_OF_RE
 }
 
 static void vector_add(int dst[NUMBER_OF_RESOURCES], const int x[NUMBER_OF_RESOURCES]) {
+    /* Element-wise: dst += x */
     int j;
     for (j = 0; j < NUMBER_OF_RESOURCES; j++) dst[j] += x[j];
 }
 
 static void vector_sub(int dst[NUMBER_OF_RESOURCES], const int x[NUMBER_OF_RESOURCES]) {
+    /* Element-wise: dst -= x */
     int j;
     for (j = 0; j < NUMBER_OF_RESOURCES; j++) dst[j] -= x[j];
 }
 
 static void queue_init(EventQueue *q) {
+    /* Simple dynamic array for storing parsed events. */
     q->cap = INITIAL_EVENT_CAP;
     q->size = 0;
     q->items = (Event *)malloc(sizeof(Event) * q->cap);
@@ -61,6 +77,7 @@ static void queue_init(EventQueue *q) {
 }
 
 static void queue_push(EventQueue *q, Event e) {
+    /* Grow capacity by doubling when full. */
     if (q->size == q->cap) {
         q->cap *= 2;
         q->items = (Event *)realloc(q->items, sizeof(Event) * q->cap);
@@ -76,6 +93,7 @@ static void queue_free(EventQueue *q) {
 }
 
 static void init_need_and_allocation(void) {
+    /* Start with zero allocation; therefore need starts as maximum. */
     int i, j;
     for (i = 0; i < NUMBER_OF_CUSTOMERS; i++) {
         for (j = 0; j < NUMBER_OF_RESOURCES; j++) {
@@ -86,6 +104,10 @@ static void init_need_and_allocation(void) {
 }
 
 static void log_event_locked(int eid, int cid, char op, const int v[NUMBER_OF_RESOURCES], int ok) {
+    /*
+     * Must be called while mutex is held.
+     * This guarantees the printed AVAIL/ALLOC/NEED snapshot matches this event.
+     */
     printf("E=%d C=%d OP=%c V=[%d,%d,%d] OK=%d AVAIL=[%d,%d,%d] ALLOC=[%d,%d,%d] NEED=[%d,%d,%d]\n",
            eid, cid, op, v[0], v[1], v[2], ok,
            available[0], available[1], available[2],
@@ -96,6 +118,11 @@ static void log_event_locked(int eid, int cid, char op, const int v[NUMBER_OF_RE
 /* ---------- Banker core ---------- */
 
 int is_safe_state(void) {
+    /*
+     * Standard Banker's safety check:
+     * - work is a temporary copy of available resources
+     * - finish[i] indicates whether customer i can complete in the simulation
+     */
     int work[NUMBER_OF_RESOURCES];
     int finish[NUMBER_OF_CUSTOMERS] = {0};
     int i, j, progressed;
@@ -107,6 +134,7 @@ int is_safe_state(void) {
         for (i = 0; i < NUMBER_OF_CUSTOMERS; i++) {
             if (finish[i]) continue;
             if (vector_leq(need[i], work)) {
+                /* Simulate customer i finishing and releasing all its allocation. */
                 for (j = 0; j < NUMBER_OF_RESOURCES; j++) work[j] += allocation[i][j];
                 finish[i] = 1;
                 progressed = 1;
@@ -134,7 +162,7 @@ int request_resources(int customer_num, int request[]) {
 
     /* 4) Safety check */
     if (!is_safe_state()) {
-        /* Rollback */
+        /* Roll back tentative changes if resulting state is unsafe. */
         vector_add(available, request);
         vector_sub(allocation[customer_num], request);
         vector_add(need[customer_num], request);
@@ -148,6 +176,7 @@ int release_resources(int customer_num, int release[]) {
     /* release must not exceed allocation */
     if (!vector_leq(release, allocation[customer_num])) return 0;
 
+    /* A valid release always moves the system toward more availability. */
     vector_add(available, release);
     vector_sub(allocation[customer_num], release);
     vector_add(need[customer_num], release);
@@ -157,6 +186,7 @@ int release_resources(int customer_num, int release[]) {
 /* ---------- Input parsing ---------- */
 
 static int read_initial_input(void) {
+    /* Read initial available vector and the full maximum matrix. */
     int i, j;
     if (scanf("%d %d %d", &available[0], &available[1], &available[2]) != 3) return 0;
 
@@ -171,6 +201,11 @@ static int read_initial_input(void) {
 }
 
 static void read_events(void) {
+    /*
+     * Parse remaining lines until EOF:
+     * cid op v0 v1 v2
+     * Invalid rows are ignored to keep parser robust.
+     */
     Event e;
     while (scanf("%d %c %d %d %d",
                  &e.cid, &e.op, &e.v[0], &e.v[1], &e.v[2]) == 5) {
@@ -184,6 +219,7 @@ static void read_events(void) {
 /* ---------- Thread ---------- */
 
 void *customer_thread(void *arg) {
+    /* One thread per customer, processing only that customer's queued events. */
     int cid = *(int *)arg;
     int k;
 
@@ -191,6 +227,10 @@ void *customer_thread(void *arg) {
         Event *e = &queues[cid].items[k];
         int ok;
 
+        /*
+         * Critical section order required by the lab:
+         * lock -> process event -> print log -> unlock
+         */
         pthread_mutex_lock(&mtx);
 
         if (e->op == 'R') ok = request_resources(cid, e->v);
@@ -206,6 +246,14 @@ void *customer_thread(void *arg) {
 }
 
 int main(void) {
+    /*
+     * Pipeline:
+     * 1) initialize queues
+     * 2) read initial state
+     * 3) initialize allocation/need
+     * 4) read all events
+     * 5) launch/join 5 customer threads
+     */
     int i;
     pthread_t tids[NUMBER_OF_CUSTOMERS];
     int cids[NUMBER_OF_CUSTOMERS];
