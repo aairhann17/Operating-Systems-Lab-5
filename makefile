@@ -1,6 +1,6 @@
 # Variables
 CC = gcc
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -g -pthread
 TARGET = group29_bankers
 SRC = group29_banker.c
 INPUT = input.txt
